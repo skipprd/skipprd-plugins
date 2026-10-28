@@ -22,12 +22,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: skipprd/skipprd
+          ref: issue-23-plugin-repos
           path: skipprd
       - name: Link host workspace
         run: ln -sfn "$GITHUB_WORKSPACE/skipprd" .host
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: python3 .github/scripts/test_plugin_ci.py
       - run: python3 .github/scripts/test_plugin_workspace.py
       - run: python3 .github/scripts/test_runtime_plugin_catalog.py
       - run: python3 .github/scripts/test_bump_changed_plugin_crates.py
@@ -42,6 +44,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: skipprd/skipprd
+          ref: issue-23-plugin-repos
           path: skipprd
       - uses: actions/checkout@v4
         with:
