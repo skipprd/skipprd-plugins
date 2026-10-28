@@ -1,0 +1,81 @@
+name: Plugin catalog
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [skipprd-engine-tag]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SKIPPR_PLUGINS_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: skipprd/skipprd
+          path: skipprd
+      - name: Link host workspace
+        run: ln -sfn "$GITHUB_WORKSPACE/skipprd" .host
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 .github/scripts/test_plugin_workspace.py
+      - run: python3 .github/scripts/test_runtime_plugin_catalog.py
+      - run: python3 .github/scripts/test_bump_changed_plugin_crates.py
+      - run: python3 .github/scripts/test_previous_protocol_compatible_release.py
+      - run: python3 .github/scripts/test_check_plugin_sources.py
+      - run: python3 .github/scripts/check_plugin_sources.py
+
+  linux_x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: skipprd/skipprd
+          path: skipprd
+      - uses: actions/checkout@v4
+        with:
+          path: skipprd-plugins
+      - name: Link host workspace
+        run: ln -sfn "$GITHUB_WORKSPACE/skipprd" skipprd-plugins/.host
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+      - name: Build catalog
+        working-directory: skipprd-plugins
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from runtime_plugin_catalog import catalog_package_names
+          names = catalog_package_names(Path(".").resolve())
+          Path("/tmp/plugin-packages.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
+          print(f"catalog={len(names)}")
+          PY
+          args=()
+          while IFS= read -r package; do
+            [ -n "$package" ] || continue
+            args+=(-p "$package")
+          done < /tmp/plugin-packages.txt
+          cargo build --release "${args[@]}"
+          mkdir -p runtime-plugin-binaries-linux_x86
+          while IFS= read -r package; do
+            cp "target/release/${package}" "runtime-plugin-binaries-linux_x86/"
+          done < /tmp/plugin-packages.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-plugin-binaries-linux_x86
+          path: skipprd-plugins/runtime-plugin-binaries-linux_x86
+          if-no-files-found: error

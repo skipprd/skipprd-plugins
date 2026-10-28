@@ -1,0 +1,620 @@
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+MODULE_PATH = SCRIPTS_DIR / "runtime_plugin_catalog.py"
+SPEC = importlib.util.spec_from_file_location("runtime_plugin_catalog", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+runtime_plugin_catalog = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(runtime_plugin_catalog)
+
+
+class RuntimePluginCatalogTests(unittest.TestCase):
+    def write_workspace_file(self, workspace: Path, relative_path: str, contents: str) -> None:
+        path = workspace / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+
+    def write_runtime_sdk_workspace(self, workspace: Path) -> None:
+        self.write_workspace_file(
+            workspace,
+            "Cargo.toml",
+            """[package]
+name = "skipprd"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["crates/skippr-runtime-sdk"]
+""",
+        )
+        self.write_workspace_file(workspace, "Cargo.lock", "version = 4\n")
+        self.write_workspace_file(
+            workspace,
+            "rust-toolchain.toml",
+            '[toolchain]\nchannel = "stable"\n',
+        )
+        self.write_workspace_file(
+            workspace,
+            ".cargo/config.toml",
+            "[build]\nincremental = false\n",
+        )
+        self.write_workspace_file(
+            workspace,
+            "crates/skippr-runtime-sdk/Cargo.toml",
+            """[package]
+name = "skippr-runtime-sdk"
+version = "0.1.0"
+edition = "2021"
+
+""",
+        )
+        self.write_workspace_file(
+            workspace,
+            "crates/skippr-runtime-sdk/src/lib.rs",
+            "pub mod protocol;\n",
+        )
+        self.write_workspace_file(
+            workspace,
+            "crates/skippr-runtime-sdk/src/protocol.rs",
+            "pub const RUNTIME_PROTOCOL_VERSION: u32 = 17;\n",
+        )
+
+    def test_runtime_sdk_build_fingerprint_is_workspace_location_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
+            first_workspace = Path(first_dir)
+            second_workspace = Path(second_dir)
+            self.write_runtime_sdk_workspace(first_workspace)
+            self.write_runtime_sdk_workspace(second_workspace)
+            self.write_workspace_file(
+                second_workspace,
+                "docs/untracked-note.md",
+                "unrelated workspace dirtiness\n",
+            )
+            (
+                second_workspace
+                / "crates"
+                / "skippr-runtime-sdk"
+                / "src"
+                / "lib.rs"
+            ).touch()
+
+            first = runtime_plugin_catalog.workspace_runtime_sdk_build_fingerprint(
+                first_workspace
+            )
+            second = runtime_plugin_catalog.workspace_runtime_sdk_build_fingerprint(
+                second_workspace
+            )
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(first), 64)
+
+    def test_runtime_sdk_fingerprint_skips_path_deps_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = root / "ws"
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "Cargo.toml").write_text(
+                '[package]\nname = "cloud-client"\nversion = "0.1.0"\nedition = "2021"\n',
+                encoding="utf-8",
+            )
+            self.write_runtime_sdk_workspace(workspace)
+            manifest = workspace / "crates" / "skippr-runtime-sdk" / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8")
+                + f'\ncloud-client = {{ path = "{outside}" }}\n',
+                encoding="utf-8",
+            )
+            fingerprint = runtime_plugin_catalog.workspace_runtime_sdk_build_fingerprint(
+                workspace
+            )
+            self.assertEqual(len(fingerprint), 64)
+
+    def test_runtime_sdk_build_fingerprint_changes_with_sdk_source(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            self.write_runtime_sdk_workspace(workspace)
+            initial = runtime_plugin_catalog.workspace_runtime_sdk_build_fingerprint(
+                workspace
+            )
+
+            self.write_workspace_file(
+                workspace,
+                "crates/skippr-runtime-sdk/src/lib.rs",
+                "pub fn changed_sdk_contract() {}\n",
+            )
+
+            self.assertNotEqual(
+                initial,
+                runtime_plugin_catalog.workspace_runtime_sdk_build_fingerprint(
+                    workspace
+                ),
+            )
+
+    def test_runtime_sdk_build_fingerprint_ignores_host_protocol_reexport(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            self.write_runtime_sdk_workspace(workspace)
+            initial = runtime_plugin_catalog.workspace_runtime_sdk_build_fingerprint(
+                workspace
+            )
+
+            self.write_workspace_file(
+                workspace,
+                "src/runtime_plugins/protocol.rs",
+                "pub use skippr_runtime_sdk::protocol::*;\n",
+            )
+
+            self.assertEqual(
+                initial,
+                runtime_plugin_catalog.workspace_runtime_sdk_build_fingerprint(
+                    workspace
+                ),
+            )
+
+    def test_package_build_checksum_changes_when_shared_code_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            plugin_dir = workspace / "plugins" / "data_source" / "s3"
+            shared_dir = workspace / "plugins" / "shared"
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/Cargo.toml",
+                "[package]\nname = 'skippr-plugin-data-source-s3'\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/src/main.rs",
+                "fn main() {}\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/shared/parquet_util.rs",
+                "pub fn helper() {}\n",
+            )
+
+            initial = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.write_workspace_file(
+                workspace,
+                "plugins/shared/parquet_util.rs",
+                "pub fn helper() { println!(\"updated\"); }\n",
+            )
+            updated = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.assertNotEqual(initial, updated)
+
+    def test_package_build_checksum_changes_when_runtime_abi_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            plugin_dir = workspace / "plugins" / "data_source" / "s3"
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/Cargo.toml",
+                "[package]\nname = 'skippr-plugin-data-source-s3'\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/src/main.rs",
+                "fn main() {}\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/shared/parquet_util.rs",
+                "pub fn helper() {}\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                ".host/crates/skippr-runtime-sdk/src/lib.rs",
+                "pub fn runtime_entry() {}\n",
+            )
+
+            initial = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.write_workspace_file(
+                workspace,
+                ".host/crates/skippr-runtime-sdk/src/lib.rs",
+                "pub fn runtime_entry() { println!(\"updated\"); }\n",
+            )
+            updated = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.assertNotEqual(initial, updated)
+
+    def test_package_build_checksum_changes_when_cargo_lock_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            plugin_dir = workspace / "plugins" / "data_source" / "s3"
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/Cargo.toml",
+                "[package]\nname = 'skippr-plugin-data-source-s3'\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/src/main.rs",
+                "fn main() {}\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "Cargo.lock",
+                "lock contents\n",
+            )
+
+            initial = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.write_workspace_file(
+                workspace,
+                "Cargo.lock",
+                "changed lock contents\n",
+            )
+            updated = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.assertNotEqual(initial, updated)
+
+    def test_package_build_checksum_ignores_unrelated_workspace_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            plugin_dir = workspace / "plugins" / "data_source" / "s3"
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/Cargo.toml",
+                "[package]\nname = 'skippr-plugin-data-source-s3'\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_source/s3/src/main.rs",
+                "fn main() {}\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "docs/notes.md",
+                "notes\n",
+            )
+
+            initial = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.write_workspace_file(
+                workspace,
+                "docs/notes.md",
+                "changed notes\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "unrelated.txt",
+                "unrelated\n",
+            )
+            updated = runtime_plugin_catalog.package_build_checksum(plugin_dir, workspace)
+
+            self.assertEqual(initial, updated)
+
+    def test_package_build_checksum_includes_plugin_path_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            plugin_dir = workspace / "plugins" / "schema_sink" / "glue"
+            dependency_dir = workspace / "plugins" / "data_sink" / "athena"
+            self.write_workspace_file(
+                workspace,
+                "plugins/schema_sink/glue/Cargo.toml",
+                "[package]\nname = 'skippr-plugin-schema-sink-glue'\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/schema_sink/glue/src/main.rs",
+                "fn main() {}\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_sink/athena/Cargo.toml",
+                "[package]\nname = 'skippr-plugin-data-sink-athena'\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_sink/athena/src/lib.rs",
+                "pub fn athena() {}\n",
+            )
+
+            initial = runtime_plugin_catalog.package_build_checksum(
+                plugin_dir, workspace, [dependency_dir]
+            )
+
+            self.write_workspace_file(
+                workspace,
+                "plugins/data_sink/athena/src/lib.rs",
+                "pub fn athena() { println!(\"updated\"); }\n",
+            )
+            updated = runtime_plugin_catalog.package_build_checksum(
+                plugin_dir, workspace, [dependency_dir]
+            )
+
+            self.assertNotEqual(initial, updated)
+
+    def test_manifest_names_are_derived_from_plugin_dir_and_kind(self) -> None:
+        self.assertEqual(
+            runtime_plugin_catalog.manifest_filename_for_plugin(
+                "plugins/data_source/http_client", "DataSource"
+            ),
+            "http-client-source.json",
+        )
+        self.assertEqual(
+            runtime_plugin_catalog.manifest_name_for_plugin(
+                "plugins/schema_sink/motherduck", "SchemaSink"
+            ),
+            "motherduck-runtime-schema",
+        )
+
+    def test_validate_plugin_metadata_requires_source_capability_for_sources(self) -> None:
+        package = {"name": "skippr-plugin-data-source-s3"}
+        with self.assertRaises(SystemExit):
+            runtime_plugin_catalog.validate_plugin_metadata(
+                package,
+                {
+                    "kind": "DataSource",
+                    "plugin_name": "S3",
+                },
+            )
+
+    def test_validate_plugin_metadata_requires_sink_retry_and_grouping(self) -> None:
+        package = {"name": "skippr-plugin-data-sink-s3"}
+        with self.assertRaises(SystemExit):
+            runtime_plugin_catalog.validate_plugin_metadata(
+                package,
+                {
+                    "kind": "DataSink",
+                    "plugin_name": "S3",
+                    "sink_capability": {
+                        "name": "S3",
+                    },
+                },
+            )
+
+    def test_validate_plugin_metadata_normalizes_bounded_grouped_sink_capability(self) -> None:
+        package = {"name": "skippr-plugin-data-sink-skipprlake"}
+
+        metadata = runtime_plugin_catalog.validate_plugin_metadata(
+            package,
+            {
+                "kind": "DataSink",
+                "plugin_name": "SkipprLake",
+                "sink_capability": {
+                    "name": "SkipprLake",
+                    "max_sessions_per_child": 1,
+                    "retry_semantics": "TransactionalIdempotent",
+                    "grouping_support": "FinalStateBatches",
+                },
+            },
+        )
+
+        self.assertTrue(
+            metadata["sink_capability"]["supports_bounded_grouped_stream"]
+        )
+        self.assertEqual(metadata["sink_capability"]["max_sessions_per_child"], 1)
+
+    def test_manifest_payload_for_catalog_entry_preserves_metadata_shape(self) -> None:
+        entry = {
+            "manifest_name": "s3-runtime-source",
+            "manifest_kind": "DataSource",
+            "plugin_name": "S3",
+            "package_version": "0.1.2",
+            "sdk_build_fingerprint": "sdk123",
+            "config_schema_version": 1,
+            "args": [],
+            "supports_schema": False,
+            "source_capability": {
+                "name": "S3",
+                "guarantee_tier": "AtLeastOnce",
+                "checkpoint_style": "OffsetStore",
+                "bootstrap_style": "SnapshotOnly",
+                "order_model": "BestEffortOrdering",
+                "supports_deletes": False,
+                "event_id_semantics": "BrokerAssigned",
+            },
+            "sink_capability": None,
+        }
+
+        manifest = runtime_plugin_catalog.manifest_payload_for_catalog_entry(
+            entry,
+            protocol_version=3,
+            artifacts={"x86_64-unknown-linux-gnu": {"executable": "skippr-plugin-data-source-s3"}},
+            executable="skippr-plugin-data-source-s3",
+            build_checksum="abc123",
+        )
+
+        self.assertEqual(manifest["name"], "s3-runtime-source")
+        self.assertEqual(manifest["kind"], "DataSource")
+        self.assertEqual(manifest["plugin_name"], "S3")
+        self.assertEqual(manifest["version"], "0.1.2")
+        self.assertEqual(manifest["protocol_version"], 3)
+        self.assertEqual(manifest["sdk_build_fingerprint"], "sdk123")
+        self.assertEqual(manifest["build_checksum"], "abc123")
+        self.assertIn("source_capability", manifest)
+        self.assertNotIn("sink_capability", manifest)
+
+    def test_sdk_build_fingerprint_validation_rejects_stale_manifest_and_index(
+        self,
+    ) -> None:
+        catalog_entry = {
+            "manifest_filename": "s3-source.json",
+            "sdk_build_fingerprint": "current-sdk",
+        }
+        with self.assertRaises(SystemExit):
+            runtime_plugin_catalog.validate_manifest_sdk_build_fingerprint(
+                {"sdk_build_fingerprint": "stale-sdk"},
+                catalog_entry,
+                "s3-source.json",
+            )
+        with self.assertRaises(SystemExit):
+            runtime_plugin_catalog.validate_manifest_index_sdk_build_fingerprint(
+                {
+                    "sdk_build_fingerprint": "current-sdk",
+                    "manifests": [
+                        {
+                            "manifest_filename": "s3-source.json",
+                            "sdk_build_fingerprint": "stale-sdk",
+                        }
+                    ],
+                },
+                [catalog_entry],
+            )
+
+        runtime_plugin_catalog.validate_manifest_sdk_build_fingerprint(
+            {"sdk_build_fingerprint": "current-sdk"},
+            catalog_entry,
+            "s3-source.json",
+        )
+        runtime_plugin_catalog.validate_manifest_index_sdk_build_fingerprint(
+            {
+                "sdk_build_fingerprint": "current-sdk",
+                "manifests": [
+                    {
+                        "manifest_filename": "s3-source.json",
+                        "sdk_build_fingerprint": "current-sdk",
+                    }
+                ],
+            },
+            [catalog_entry],
+        )
+
+    def test_workspace_runtime_protocol_version_uses_current_runtime_plugin_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            self.write_workspace_file(
+                workspace,
+                "crates/skippr-runtime-sdk/src/protocol.rs",
+                "pub const RUNTIME_PROTOCOL_VERSION: u32 = 6;\n",
+            )
+            self.write_workspace_file(
+                workspace,
+                "src/runtime_plugins/protocol.rs",
+                "pub const RUNTIME_PROTOCOL_VERSION: u32 = 99;\n",
+            )
+
+            self.assertEqual(
+                runtime_plugin_catalog.workspace_runtime_protocol_version(workspace),
+                6,
+            )
+
+    def test_warehouse_docs_and_crates_name_skipprlake_not_iceberg_plugin(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        connectors = repo / "docs" / "docs" / "connectors"
+        for gone in (
+            connectors / "outputs" / "iceberg.md",
+            connectors / "schema_sinks" / "iceberg.md",
+            connectors / "outputs" / "athena_iceberg.md",
+            connectors / "schema_sinks" / "athena_iceberg.md",
+        ):
+            self.assertFalse(gone.exists(), f"{gone} must be deleted")
+        for present in (
+            connectors / "outputs" / "skipprlake.md",
+            connectors / "schema_sinks" / "skipprlake.md",
+            connectors / "outputs" / "athenaiceberg.md",
+            connectors / "schema_sinks" / "athenaiceberg.md",
+            connectors / "outputs" / "duckdb.md",
+            connectors / "schema_sinks" / "duckdb.md",
+        ):
+            self.assertTrue(present.is_file(), f"{present} must exist")
+        index = (connectors / "index.md").read_text(encoding="utf-8")
+        self.assertIn("`SkipprLake`", index)
+        self.assertIn("`AthenaIceberg`", index)
+        self.assertIn("`Duckdb`", index)
+        self.assertNotIn("outputs/iceberg.md", index)
+        changelog = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("**`SkipprLake`**", changelog)
+        self.assertIn("**`AthenaIceberg`**", changelog)
+        self.assertIn("**`Duckdb`**", changelog)
+        docs_nav = (repo / "docs" / ".vitepress" / "engine-nav.mjs").read_text(
+            encoding="utf-8"
+        ) + (repo / "docs" / ".vitepress" / "config.mjs").read_text(encoding="utf-8")
+        self.assertIn("/connectors/outputs/skipprlake", docs_nav)
+        self.assertIn("/connectors/outputs/athenaiceberg", docs_nav)
+        self.assertIn("/connectors/outputs/duckdb", docs_nav)
+        self.assertNotIn("/connectors/outputs/iceberg", docs_nav)
+        self.assertNotIn("athena_iceberg", docs_nav)
+        skipprlake = (connectors / "outputs" / "skipprlake.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Iceberg", skipprlake)
+        self.assertNotIn("Skippr catalog", skipprlake)
+        datalake = (repo / "docs" / "docs" / "concepts" / "datalake.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("/connectors/outputs/skipprlake", datalake)
+        self.assertNotIn("Skipprd catalog", datalake)
+        python_md = (repo / "docs" / "docs" / "python.md").read_text(encoding="utf-8")
+        self.assertIn("`AthenaIceberg`", python_md)
+        self.assertIn("`Duckdb`", python_md)
+        self.assertNotIn("DataSink.", python_md)
+        self.assertNotIn("Athena Iceberg", python_md)
+        self.assertNotIn("DuckDB Iceberg", python_md)
+        otel_wbs = (
+            repo / "docs" / "docs" / "maintainers" / "hla-observability-implementation-wbs.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SkipprLake is the dest", otel_wbs)
+        self.assertNotIn("Iceberg is the dest", otel_wbs)
+        plugins = runtime_plugin_catalog.catalog_plugin_workspace(repo) / "plugins"
+        self.assertFalse((plugins / "data_sink" / "iceberg").exists())
+        self.assertFalse((plugins / "schema_sink" / "iceberg").exists())
+        iceberg_plugin_tomls = [
+            str(cargo.relative_to(repo))
+            for cargo in plugins.rglob("Cargo.toml")
+            if 'plugin_name = "Iceberg"' in cargo.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(iceberg_plugin_tomls, [])
+        named = {
+            line.split("=", 1)[1].strip().strip('"')
+            for cargo in plugins.rglob("Cargo.toml")
+            for line in cargo.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("plugin_name =")
+        }
+        self.assertIn("SkipprLake", named)
+        self.assertIn("AthenaIceberg", named)
+        self.assertIn("Duckdb", named)
+        self.assertNotIn("Iceberg", named)
+
+    def test_catalog_package_names_lists_every_workspace_plugin(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        names = runtime_plugin_catalog.catalog_package_names(repo)
+        self.assertGreater(len(names), 20)
+        self.assertEqual(names, sorted(set(names)))
+        for package in (
+            "skippr-plugin-data-source-s3",
+            "skippr-plugin-data-source-file",
+            "skippr-plugin-data-sink-file",
+            "skippr-plugin-data-sink-s3",
+            "skippr-plugin-data-sink-athena-iceberg",
+            "skippr-plugin-schema-sink-athena-iceberg",
+            "skippr-plugin-data-sink-skipprlake",
+            "skippr-plugin-schema-sink-skipprlake",
+        ):
+            self.assertIn(package, names)
+        targets = (repo / "runtime_plugins" / "targets.json").read_text(encoding="utf-8")
+        self.assertIn('"runner_baseline": "skippr-darwin-arm64"', targets)
+        self.assertNotIn("skippr-darwin-arm64-8", targets)
+
+    def test_workspace_runtime_protocol_version_supports_legacy_sdk_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            self.write_workspace_file(
+                workspace,
+                "crates/skippr-runtime-sdk/src/protocol.rs",
+                "pub const RUNTIME_PROTOCOL_VERSION: u32 = 5;\n",
+            )
+
+            self.assertEqual(
+                runtime_plugin_catalog.workspace_runtime_protocol_version(workspace),
+                5,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

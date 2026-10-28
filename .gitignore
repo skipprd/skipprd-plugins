@@ -1,0 +1,5 @@
+/target/
+/.host
+.DS_Store
+.idea
+*.swp
