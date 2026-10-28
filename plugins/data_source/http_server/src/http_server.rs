@@ -112,7 +112,7 @@ impl DataSource for DataSourceHttpServerPlugin {
         });
 
         let mut counter: u64 = 0;
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
                 Ok(Some(data)) => {
                     counter += 1;

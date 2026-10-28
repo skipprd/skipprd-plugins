@@ -120,7 +120,7 @@ impl DataSource for DataSourceStdinPlugin {
         let poll = Duration::from_millis(500);
 
         if stream_mode {
-            while RUNNING.read().load(Ordering::SeqCst) {
+            while RUNNING.load(Ordering::SeqCst) {
                 match rx.recv_timeout(poll) {
                     Ok(buffer) => {
                         self.dispatch_batch(ctx.as_ref(), buffer)?;

@@ -112,7 +112,7 @@ impl DataSource for DataSourceStatsdPlugin {
         let mut buf = [0u8; 65535];
         let mut counter: u64 = 0;
 
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             match tokio::time::timeout(Duration::from_secs(1), socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, _addr))) => {
                     let raw = String::from_utf8_lossy(&buf[..len]).into_owned();

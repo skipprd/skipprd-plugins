@@ -91,7 +91,7 @@ impl DataSource for DataSourceMqttPlugin {
             if is_batch { "batch" } else { "stream" }
         );
 
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             match timeout(Duration::from_secs(1), eventloop.poll()).await {
                 Ok(Ok(Event::Incoming(Packet::Publish(publish)))) => {
                     last_msg = Instant::now();

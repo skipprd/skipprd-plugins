@@ -85,14 +85,14 @@ impl DataSource for DataSourceSocketPlugin {
             "tcp" => {
                 let listener = TcpListener::bind(&self.config.address).await?;
                 info!("Socket (TCP): listening on {}", self.config.address);
-                while RUNNING.read().load(Ordering::SeqCst) {
+                while RUNNING.load(Ordering::SeqCst) {
                     match tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
                         Ok(Ok((stream, _addr))) => {
                             let reader = tokio::io::BufReader::new(stream);
                             let mut lines = reader.lines();
                             while let Ok(Some(line)) = lines.next_line().await {
                                 self.ingest_line(line, &mut counter, ctx.as_ref())?;
-                                if !RUNNING.read().load(Ordering::SeqCst) {
+                                if !RUNNING.load(Ordering::SeqCst) {
                                     break;
                                 }
                             }
@@ -106,7 +106,7 @@ impl DataSource for DataSourceSocketPlugin {
                 let socket = UdpSocket::bind(&self.config.address).await?;
                 info!("Socket (UDP): listening on {}", self.config.address);
                 let mut buf = [0u8; 65535];
-                while RUNNING.read().load(Ordering::SeqCst) {
+                while RUNNING.load(Ordering::SeqCst) {
                     match tokio::time::timeout(Duration::from_secs(1), socket.recv_from(&mut buf))
                         .await
                     {
@@ -125,14 +125,14 @@ impl DataSource for DataSourceSocketPlugin {
             "unix" => {
                 let listener = tokio::net::UnixListener::bind(&self.config.address)?;
                 info!("Socket (Unix): listening on {}", self.config.address);
-                while RUNNING.read().load(Ordering::SeqCst) {
+                while RUNNING.load(Ordering::SeqCst) {
                     match tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
                         Ok(Ok((stream, _addr))) => {
                             let reader = tokio::io::BufReader::new(stream);
                             let mut lines = reader.lines();
                             while let Ok(Some(line)) = lines.next_line().await {
                                 self.ingest_line(line, &mut counter, ctx.as_ref())?;
-                                if !RUNNING.read().load(Ordering::SeqCst) {
+                                if !RUNNING.load(Ordering::SeqCst) {
                                     break;
                                 }
                             }

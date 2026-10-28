@@ -28,6 +28,7 @@ FORBIDDEN_SOURCE = {
     ),
     "deleted sink_compat import": re.compile(r"\bsink_compat\b"),
     "deleted source_compat import": re.compile(r"\bsource_compat\b"),
+    "SDK RUNNING is AtomicBool": re.compile(r"\bRUNNING\.read\s*\("),
 }
 
 

@@ -73,7 +73,7 @@ impl DataSource for DataSourceSnsPlugin {
         let namespace = format!("sns.{}", topic_name);
         info!("SNS: consuming from SQS queue for topic '{}'", topic_name);
 
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             let result = self
                 .sqs_client
                 .receive_message()

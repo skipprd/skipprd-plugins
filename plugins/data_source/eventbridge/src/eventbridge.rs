@@ -73,7 +73,7 @@ impl DataSource for DataSourceEventbridgePlugin {
 
         let namespace = format!("eventbridge.{}", self.config.event_bus_name);
 
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             let result = self
                 .sqs_client
                 .receive_message()

@@ -200,7 +200,7 @@ impl DataSource for DataSourceHttpClientPlugin {
                     "HttpClient polling every {}s: {}",
                     interval, self.config.url
                 );
-                while RUNNING.read().load(Ordering::SeqCst) {
+                while RUNNING.load(Ordering::SeqCst) {
                     if let Err(e) = self.fetch_once(ctx.as_ref()).await {
                         error!("HttpClient fetch error: {}", e);
                     }

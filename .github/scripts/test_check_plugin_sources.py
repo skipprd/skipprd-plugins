@@ -13,6 +13,9 @@ class CheckPluginSourcesTests(unittest.TestCase):
         self.assertIn("skipprd crate import", FORBIDDEN_SOURCE)
         self.assertIn("direct skippr_core import", FORBIDDEN_SOURCE)
 
+    def test_bans_host_running_rwlock_pattern(self) -> None:
+        self.assertIn("SDK RUNNING is AtomicBool", FORBIDDEN_SOURCE)
+
 
 if __name__ == "__main__":
     unittest.main()

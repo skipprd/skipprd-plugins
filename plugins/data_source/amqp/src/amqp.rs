@@ -126,7 +126,7 @@ impl DataSource for DataSourceAmqpPlugin {
             if is_batch { "batch" } else { "stream" }
         );
 
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             match tokio::time::timeout(Duration::from_secs(1), consumer.next()).await {
                 Ok(Some(Ok(delivery))) => {
                     last_msg = Instant::now();

@@ -242,7 +242,7 @@ impl DataSourceKinesisPlugin {
         let mut backoff_ms: u64 = 100;
 
         loop {
-            if !RUNNING.read().load(Ordering::SeqCst) {
+            if !RUNNING.load(Ordering::SeqCst) {
                 break;
             }
 

@@ -186,7 +186,7 @@ impl DataSource for DataSourceKafkaPlugin {
 
         let mut stream = consumer.stream();
 
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             match tokio::time::timeout(Duration::from_secs(1), stream.next()).await {
                 Ok(Some(Ok(msg))) => {
                     last_msg = Instant::now();

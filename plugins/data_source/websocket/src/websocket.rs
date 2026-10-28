@@ -70,7 +70,7 @@ impl DataSource for DataSourceWebsocketPlugin {
 
         info!("WebSocket: connected to {}", self.config.url);
 
-        while RUNNING.read().load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             match tokio::time::timeout(Duration::from_secs(1), read.next()).await {
                 Ok(Some(Ok(msg))) => {
                     let data = match msg {
